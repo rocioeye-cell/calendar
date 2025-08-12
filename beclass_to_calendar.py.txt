@@ -1,0 +1,72 @@
+import requests
+from bs4 import BeautifulSoup
+import datetime
+import os
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# ========== 設定 ==========
+CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID")  # 從 GitHub Secrets 讀取
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+CREDENTIALS_FILE = "credentials.json"  # 放在專案中（或GitHub Secrets動態生成）
+
+# BeClass 免費活動列表
+BECLASS_URL = "https://www.beclass.com/default.php?name=ShowList&op=catRank&range=G&hotrank=hid"
+
+# ========== Google Calendar 連線 ==========
+def get_calendar_service():
+    creds = service_account.Credentials.from_service_account_file(
+        CREDENTIALS_FILE, scopes=SCOPES
+    )
+    service = build('calendar', 'v3', credentials=creds)
+    return service
+
+# ========== 爬取 BeClass 免費活動 ==========
+def fetch_beclass_free_events():
+    res = requests.get(BECLASS_URL)
+    res.encoding = 'utf-8'
+    soup = BeautifulSoup(res.text, 'html.parser')
+
+    events = []
+    for row in soup.select("tr"):
+        title_tag = row.select_one("a")
+        date_tag = row.select_one("td:nth-child(2)")
+        location_tag = row.select_one("td:nth-child(3)")
+        if title_tag and "免費" in title_tag.text:  # 篩選免費活動
+            title = title_tag.text.strip()
+            date_text = date_tag.text.strip() if date_tag else ""
+            location = location_tag.text.strip() if location_tag else "未提供地點"
+
+            try:
+                start_date = datetime.datetime.strptime(date_text, "%Y-%m-%d")
+                end_date = start_date + datetime.timedelta(hours=2)  # 預設2小時
+            except:
+                continue
+
+            events.append({
+                "summary": title,
+                "location": location,
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat()
+            })
+    return events
+
+# ========== 寫入 Google 日曆 ==========
+def insert_events_to_calendar(events):
+    service = get_calendar_service()
+    for event in events:
+        event_body = {
+            'summary': event["summary"],
+            'location': event["location"],
+            'start': {'dateTime': event["start"], 'timeZone': 'Asia/Taipei'},
+            'end': {'dateTime': event["end"], 'timeZone': 'Asia/Taipei'},
+        }
+        service.events().insert(calendarId=CALENDAR_ID, body=event_body).execute()
+        print(f"已新增活動：{event['summary']}")
+
+if __name__ == "__main__":
+    events = fetch_beclass_free_events()
+    if events:
+        insert_events_to_calendar(events)
+    else:
+        print("沒有找到免費活動")
